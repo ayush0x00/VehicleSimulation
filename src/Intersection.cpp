@@ -9,143 +9,138 @@
 #include "Vehicle.h"
 
 /* Implementation of class "WaitingVehicles" */
-
-int WaitingVehicles::getSize()
+int waiting_vehicles::get_size()
 {
-    std::lock_guard<std::mutex> lock(_mutex);
+	std::unique_lock<std::mutex> lck(mutex_);
 
-    return _vehicles.size();
+	return vehicles_.size();
 }
 
-void WaitingVehicles::pushBack(std::shared_ptr<Vehicle> vehicle, std::promise<void> &&promise)
+void waiting_vehicles::push_back(const std::shared_ptr<vehicle>& vehicle, std::promise<void>&& promise)
 {
-    std::lock_guard<std::mutex> lock(_mutex);
+	std::unique_lock<std::mutex> lck(mutex_);
 
-    _vehicles.push_back(vehicle);
-    _promises.push_back(std::move(promise));
+	vehicles_.push_back(vehicle);
+	promises_.push_back(std::move(promise));
 }
 
-void WaitingVehicles::permitEntryToFirstInQueue()
+void waiting_vehicles::permit_entry_to_first_in_queue()
 {
-    std::lock_guard<std::mutex> lock(_mutex);
+	std::unique_lock<std::mutex> lck(mutex_);
 
-    // get entries from the front of both queues
-    auto firstPromise = _promises.begin();
-    auto firstVehicle = _vehicles.begin();
+	/* Get entries from the front of both queues */
+	auto first_promise = promises_.begin();
+	auto first_vehicle = vehicles_.begin();
 
-    // fulfill promise and send signal back that permission to enter has been granted
-    firstPromise->set_value();
+	/* Fulfill promise and send signal back that permission to enter has been granted */
+	first_promise->set_value();
 
-    // remove front elements from both queues
-    _vehicles.erase(firstVehicle);
-    _promises.erase(firstPromise);
+	/* Remove front elements from both queues */
+	vehicles_.erase(first_vehicle);
+	promises_.erase(first_promise);
 }
 
 /* Implementation of class "Intersection" */
-
-Intersection::Intersection()
+intersection::intersection()
 {
-    _type = ObjectType::objectIntersection;
-    _isBlocked = false;
+	type_ = object_intersection;
+	is_blocked_ = false;
 }
 
-void Intersection::addStreet(std::shared_ptr<Street> street)
+void intersection::add_street(const std::shared_ptr<street>& street)
 {
-    _streets.push_back(street);
+	streets_.push_back(street);
 }
 
-std::vector<std::shared_ptr<Street>> Intersection::queryStreets(std::shared_ptr<Street> incoming)
+std::vector<std::shared_ptr<street>> intersection::query_streets(const std::shared_ptr<street>& incoming)
 {
-    // store all outgoing streets in a vector ...
-    std::vector<std::shared_ptr<Street>> outgoings;
-    for (auto it : _streets)
-    {
-        if (incoming->getID() != it->getID()) // ... except the street making the inquiry
-        {
-            outgoings.push_back(it);
-        }
-    }
+	/* Store all outgoing streets in a vector */
+	std::vector<std::shared_ptr<street>> outgoings;
+	for (const auto& it : streets_)
+	{
+		if (incoming->get_id() != it->get_id()) //Except the street making the inquiry
+		{
+			outgoings.push_back(it);
+		}
+	}
 
-    return outgoings;
+	return outgoings;
 }
 
-// adds a new vehicle to the queue and returns once the vehicle is allowed to enter
-void Intersection::addVehicleToQueue(std::shared_ptr<Vehicle> vehicle)
+/* Adds a new vehicle to the queue and returns once the vehicle is allowed to enter */
+void intersection::add_vehicle_to_queue(const std::shared_ptr<vehicle>& vehicle)
 {
-    std::unique_lock<std::mutex> lck(_mtx);
-    std::cout << "Intersection #" << _id << "::addVehicleToQueue: thread id = " << std::this_thread::get_id() << std::endl;
-    lck.unlock();
+	std::unique_lock<std::mutex> lck(mtx_);
+	std::cout << "Intersection #" << id_ << "::addVehicleToQueue: thread id = " << std::this_thread::get_id() << std::endl;
+	lck.unlock();
 
-    // add new vehicle to the end of the waiting line
-    std::promise<void> prmsVehicleAllowedToEnter;
-    std::future<void> ftrVehicleAllowedToEnter = prmsVehicleAllowedToEnter.get_future();
-    _waitingVehicles.pushBack(vehicle, std::move(prmsVehicleAllowedToEnter));
+	/* Add new vehicle to the end of the waiting line */
+	std::promise<void> prms_vehicle_allowed_to_enter;
+	std::future<void> ftr_vehicle_allowed_to_enter = prms_vehicle_allowed_to_enter.get_future();
+	waiting_vehicles_.push_back(vehicle, std::move(prms_vehicle_allowed_to_enter));
 
-    // wait until the vehicle is allowed to enter
-    ftrVehicleAllowedToEnter.wait();
-    lck.lock();
-    std::cout << "Intersection #" << _id << ": Vehicle #" << vehicle->getID() << " is granted entry." << std::endl;
-    
-    // FP.6b : use the methods TrafficLight::getCurrentPhase and TrafficLight::waitForGreen to block the execution until the traffic light turns green.
+	/* Wait until the vehicle is allowed to enter */
+	ftr_vehicle_allowed_to_enter.wait();
+	lck.lock();
+	std::cout << "Intersection #" << id_ << ": Vehicle #" << vehicle->get_id() << " is granted entry." << std::endl;
+	lck.unlock();
 
-    lck.unlock();
+	/* If traffic sign is red, wait until the traffic light turns green */
+	if(traffic_light_.get_current_phase() == red)
+	{
+		traffic_light_.wait_for_green();
+	}
 }
 
-void Intersection::vehicleHasLeft(std::shared_ptr<Vehicle> vehicle)
+void intersection::vehicle_has_left(const std::shared_ptr<vehicle>& vehicle)
 {
-    //std::cout << "Intersection #" << _id << ": Vehicle #" << vehicle->getID() << " has left." << std::endl;
+	std::cout << "Intersection #" << id_ << ": Vehicle #" << vehicle->get_id() << " has left." << std::endl;
 
-    // unblock queue processing
-    this->setIsBlocked(false);
+	/* Unblock queue processing */
+	this->set_is_blocked(false);
 }
 
-void Intersection::setIsBlocked(bool isBlocked)
+void intersection::set_is_blocked(const bool is_blocked)
 {
-    _isBlocked = isBlocked;
-    //std::cout << "Intersection #" << _id << " isBlocked=" << isBlocked << std::endl;
+	is_blocked_ = is_blocked;
+
+	std::cout << "Intersection #" << id_ << " isBlocked=" << is_blocked << std::endl;
 }
 
-// virtual function which is executed in a thread
-void Intersection::simulate() // using threads + promises/futures + exceptions
+/* Virtual function which is executed in a thread */
+void intersection::simulate() // using threads + promises/futures + exceptions
 {
-    // FP.6a : In Intersection.h, add a private member _trafficLight of type TrafficLight. At this position, start the simulation of _trafficLight.
+	/* Start the simulation of our traffic light */
+	traffic_light_.simulate();
 
-    // launch vehicle queue processing in a thread
-    threads.emplace_back(std::thread(&Intersection::processVehicleQueue, this));
+	/* Launch vehicle queue processing in a thread */
+	threads_.emplace_back(std::thread(&intersection::process_vehicle_queue, this));
 }
 
-void Intersection::processVehicleQueue()
+void intersection::process_vehicle_queue()
 {
-    // print id of the current thread
-    //std::cout << "Intersection #" << _id << "::processVehicleQueue: thread id = " << std::this_thread::get_id() << std::endl;
+	/* Print id of the current thread */
+	std::cout << "Intersection #" << id_ << "::processVehicleQueue: thread id = " << std::this_thread::get_id() << std::endl;
 
-    // continuously process the vehicle queue
-    while (true)
-    {
-        // sleep at every iteration to reduce CPU usage
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	/* Continuously process the vehicle queue */
+	while (true)
+	{
+		/* Sleep at every iteration to reduce CPU usage */
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
-        // only proceed when at least one vehicle is waiting in the queue
-        if (_waitingVehicles.getSize() > 0 && !_isBlocked)
-        {
-            // set intersection to "blocked" to prevent other vehicles from entering
-            this->setIsBlocked(true);
+		/* Only proceed when at least one vehicle is waiting in the queue */
+		if (waiting_vehicles_.get_size() > 0 && !is_blocked_)
+		{
+			/* Set intersection to "blocked" to prevent other vehicles from entering */
+			this->set_is_blocked(true);
 
-            // permit entry to first vehicle in the queue (FIFO)
-            _waitingVehicles.permitEntryToFirstInQueue();
-        }
-    }
+			/* Permit entry to first vehicle in the queue (FIFO) */
+			waiting_vehicles_.permit_entry_to_first_in_queue();
+		}
+	}
 }
 
-bool Intersection::trafficLightIsGreen()
+bool intersection::traffic_light_is_green() const
 {
-   // please include this part once you have solved the final project tasks
-   /*
-   if (_trafficLight.getCurrentPhase() == TrafficLightPhase::green)
-       return true;
-   else
-       return false;
-   */
-
-  return true; // makes traffic light permanently green
-} 
+	return traffic_light_.get_current_phase() == green;
+}
