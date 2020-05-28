@@ -1,118 +1,104 @@
-
 #include <iostream>
 #include <random>
-
-#include "TrafficLight.h"
-#include <queue>
+#include <thread>
+#include <chrono>
+#include <random>
 #include <future>
 
-/* Implementation of class "message_queue" */
-template <class T>
-T message_queue<T>::receive()
-{
- /* Create a lock and pass it to the condition variable */
- std::unique_lock<std::mutex> u_lock(mutex_);
- cond_.wait(u_lock, [this] { return !queue_.empty(); });
+#include "TrafficLight.h"
 
- /* Get the latest element and remove it from the queue */
- T msg = std::move(queue_.back());
- queue_.pop_back();
- return msg;
+
+
+template <typename T>
+T MessageQueue<T>::receive()
+{
+    // FP.5a : The method receive should use std::unique_lock<std::mutex> and _condition.wait()
+    // to wait for and receive new messages and pull them from the queue using move semantics.
+    // The received object should then be returned by the receive function.
+    std::unique_lock<std::mutex> lock(_mutex);
+    _condition.wait(lock, [this]{ return  !_queue.empty();});
+
+    T msg = std::move(_queue.front());
+    _queue.pop_front();
+    return msg;
 }
 
-template <class T>
-void message_queue<T>::send(T&& msg)
+template <typename T>
+void MessageQueue<T>::send(T &&msg)
 {
- /* Prevent data race */
- std::lock_guard<std::mutex> u_lock(mutex_);
+    // FP.4a : The method send should use the mechanisms std::lock_guard<std::mutex>
+    // as well as _condition.notify_one() to add a new message to the queue and afterwards send a notification.
 
- /* Move into queue and notify client */
- queue_.push_back(std::move(msg));
- cond_.notify_one();
+    std::lock_guard<std::mutex> lock(_mutex);
+    _queue.emplace_back(msg);
+    _condition.notify_one();
 }
 
-/* Implementation of class "traffic_light" */
-traffic_light::traffic_light()
+TrafficLight::TrafficLight()
 {
- current_phase_ = red;
- msg_queue_ = std::make_shared<message_queue<traffic_light_phase>>();
+    _currentPhase = TrafficLightPhase::red;
 }
 
-traffic_light_phase traffic_light::get_current_phase() const
+void TrafficLight::waitForGreen()
 {
- return current_phase_;
+    // FP.5b : add the implementation of the method waitForGreen, in which an infinite while-loop
+    // runs and repeatedly calls the receive function on the message queue.
+    // Once it receives TrafficLightPhase::green, the method returns.
+    while (true)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        auto msg = _queue.receive();
+        if(msg == green){
+            return;
+        }
+    }
+
 }
 
-void traffic_light::wait_for_green() const
+TrafficLightPhase TrafficLight::getCurrentPhase()
 {
- while (true)
- {
-   /* Sleep at every iteration to reduce CPU usage */
-   std::this_thread::sleep_for(std::chrono::milliseconds(1));
-
-   /* Wait until the traffic light is green, received from message queue */
-   auto curr_phase = msg_queue_->receive();
-   if (curr_phase == green)
-   {
-     return;
-   }
- }
+    return _currentPhase;
 }
 
-void traffic_light::simulate()
+void TrafficLight::simulate()
 {
- threads_.emplace_back(std::thread(&traffic_light::cycle_through_phases, this));
+    // FP.2b : Finally, the private method „cycleThroughPhases“ should be started in a thread when the public method „simulate“ is called. To do this, use the thread queue in the base class.
+    threads.emplace_back(std::thread(&TrafficLight::cycleThroughPhases, this));
 }
 
-/* Virtual function which is executed in a thread */
-void traffic_light::cycle_through_phases()
+void TrafficLight::cycleThroughPhases()
 {
- /* Init our random generation between 4 and 6 seconds */
- std::random_device rd;
- std::mt19937 eng(rd());
- std::uniform_int_distribution<> distr(4, 6);
+    // FP.2a : Implement the function with an infinite loop that measures the time between two loop cycles
+    // and toggles the current phase of the traffic light between red and green and sends an update method
+    // to the message queue using move semantics. The cycle duration should be a random value between 4 and 6 seconds.
+    // Also, the while-loop should use std::this_thread::sleep_for to wait 1ms between two cycles.
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<int> dist(4000, 6000);
+    int cycleDuration = dist(gen);
 
- /* Print id of the current thread */
- std::unique_lock<std::mutex> lck(mtx_);
- std::cout << "Traffic_Light #" << id_ << "::Cycle_Through_Phases: thread id = " << std::this_thread::get_id() << std::endl;
- lck.unlock();
+    auto lastSwitchedTime = std::chrono::system_clock::now();
+    while (true)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
- /* Initalize variables */
- int cycle_duration = distr(eng); //Duration of a single simulation cycle in seconds, is randomly chosen
+        auto tmpSeconds = std::chrono::duration_cast<std::chrono::milliseconds>
+                                (std::chrono::system_clock::now() - lastSwitchedTime);
+        int durationSinceSwitched = tmpSeconds.count();
 
- /* Init stop watch */
- auto last_update = std::chrono::system_clock::now();
- while (true)
- {
-   /* Compute time difference to stop watch */
-   long time_since_last_update = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now() - last_update).count();
+        if(durationSinceSwitched >= cycleDuration){
+            _currentPhase = _currentPhase == red ? green : red;
 
-   /* Sleep at every iteration to reduce CPU usage */
-   std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            auto sentFuture = std::async(std::launch::async,
+                                    &MessageQueue<TrafficLightPhase>::send,
+                                    &_queue,
+                                    std::move(_currentPhase));
+            sentFuture.wait();
 
-   /* It is time to toggle our traffic light */
-   if (time_since_last_update >= cycle_duration)
-   {
-     /* Toggle current phase of traffic light */
-     if (current_phase_ == red)
-     {
-       current_phase_ = green;
-     }
-     else
-     {
-       current_phase_ = red;
-     }
+            lastSwitchedTime = std::chrono::system_clock::now();
+            cycleDuration = dist(gen);
+        }
 
-     /* Send an update to the message queue and wait for it to be sent */
-     auto msg = current_phase_;
-     auto is_sent = std::async(std::launch::async, &message_queue<traffic_light_phase>::send, msg_queue_, std::move(msg));
-     is_sent.wait();
+    }
 
-     /* Reset stop watch for next cycle */
-     last_update = std::chrono::system_clock::now();
-
-     /* Randomly choose the cycle duration for the next cycle */
-     cycle_duration = distr(eng);
-   }
- }
 }
